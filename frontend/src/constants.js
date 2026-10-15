@@ -86,7 +86,7 @@ export const PROXY_SETTINGS_OPTIONS = {
     label: 'Initial HLS Playlist Media',
     hls: true,
     description:
-      'Completed media in seconds required before native HLS returns its first playlist.',
+      'Playable media in seconds required in a new native HLS session after live-edge holdback is applied.',
   },
   hls_live_edge_holdback_seconds: {
     label: 'HLS Live Edge Holdback',

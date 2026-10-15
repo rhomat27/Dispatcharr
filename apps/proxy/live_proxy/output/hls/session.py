@@ -43,7 +43,8 @@ redis.call(
   'channel_id', ARGV[1],
   'client_id', ARGV[2],
   'user_id', ARGV[5],
-  'live_edge_holdback_seconds', ARGV[6]
+  'live_edge_holdback_seconds', ARGV[6],
+  'initial_playlist_seconds', ARGV[7]
 )
 redis.call('EXPIRE', session_key, tonumber(ARGV[4]))
 redis.call('HSET', client_key, 'hls_token', ARGV[3])
@@ -57,7 +58,7 @@ return 1
 # a phantom consumer. The token must still be the one stored on the client hash
 # so a replaced capability URL cannot keep refreshing after remint. Return codes:
 # 0 expired, 1 stopped, 2 lapsed, 3 + channel_id + client_id + frozen
-# holdback + HGETALL client fields.
+# holdback + initial media + HGETALL client fields.
 _LUA_TOUCH_SESSION = """
 local session_key = KEYS[1]
 local channel_id = redis.call('HGET', session_key, 'channel_id')
@@ -92,7 +93,8 @@ redis.call('SADD', clients_key, client_id)
 redis.call('EXPIRE', clients_key, ttl)
 redis.call('EXPIRE', session_key, ttl)
 local holdback = redis.call('HGET', session_key, 'live_edge_holdback_seconds')
-local reply = {3, channel_id, client_id, holdback or '0'}
+local initial_media = redis.call('HGET', session_key, 'initial_playlist_seconds')
+local reply = {3, channel_id, client_id, holdback or '0', initial_media or '4'}
 for i = 1, #hash do
   reply[#reply + 1] = hash[i]
 end
@@ -187,9 +189,9 @@ def mint_hls_session(redis_client, channel_id, client_id, user_id=None):
     record is already gone. Also stores the token on the client hash so
     teardown can delete the session key. ``user_id`` is stored on the
     session hash for authenticated stop (anonymous uses ``"0"``). The live
-    edge holdback is also captured here, rather than read on every playlist
-    request, so a settings change cannot retract tail segments an active
-    client has already seen.
+    edge holdback and required initial media are also captured here, rather
+    than read on every playlist request, so settings changes cannot change an
+    active session's playlist progression.
     """
     if not redis_client:
         return None
@@ -201,11 +203,14 @@ def mint_hls_session(redis_client, channel_id, client_id, user_id=None):
     holdback_seconds = max(
         0, float(ConfigHelper.hls_live_edge_holdback_seconds() or 0)
     )
+    initial_playlist_seconds = max(
+        0, float(ConfigHelper.hls_initial_playlist_seconds() or 0)
+    )
     created = _script(redis_client, "mint", _LUA_MINT_IF_CLIENT_EXISTS)(
         keys=[client_key, session_key],
         args=[
             str(channel_id), str(client_id), token, int(ttl), user_id_str,
-            str(holdback_seconds),
+            str(holdback_seconds), str(initial_playlist_seconds),
         ],
     )
     if not created:
@@ -241,8 +246,9 @@ def hls_session_owned_by(session, user_id):
 def touch_hls_session(redis_client, token):
     """Resolve a capability URL and refresh its live client in one round trip.
 
-    Returns ((channel_id, client_id, holdback_seconds, client_hash), None) on
-    success. ``holdback_seconds`` is frozen when the capability URL is minted.
+    Returns ((channel_id, client_id, holdback_seconds, initial_playlist_seconds,
+    client_hash), None) on success. The timing values are frozen when the
+    capability URL is minted.
     Returns (None, "expired"|"stopped"|"lapsed") on failure.
 
     Never recreates a missing client hash.
@@ -262,14 +268,24 @@ def touch_hls_session(redis_client, token):
         return None, "expired"
     if status == 1:
         return None, "stopped"
-    if status != 3 or len(result) < 4:
+    if status != 3 or len(result) < 5:
         return None, "lapsed"
     channel_id, client_id = result[1], result[2]
     try:
         holdback_seconds = max(0.0, float(result[3] or 0))
     except (TypeError, ValueError):
         holdback_seconds = 0.0
-    return (channel_id, client_id, holdback_seconds, _lua_hash(result[4:])), None
+    try:
+        initial_playlist_seconds = max(0.0, float(result[4] or 0))
+    except (TypeError, ValueError):
+        initial_playlist_seconds = 0.0
+    return (
+        channel_id,
+        client_id,
+        holdback_seconds,
+        initial_playlist_seconds,
+        _lua_hash(result[5:]),
+    ), None
 
 
 def enter_cold_start(redis_client, token):

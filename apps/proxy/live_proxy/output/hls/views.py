@@ -215,7 +215,8 @@ def _apply_live_edge_holdback(window, holdback_seconds):
     return window[:end]
 
 
-def _render_playlist_text(playlist_json, live_edge_holdback_seconds=0):
+def _render_playlist_text(playlist_json, live_edge_holdback_seconds=0,
+                          minimum_media_seconds=0):
     """Render playlist JSON to m3u8 text.
 
     Raises _StalePlaylist for a descriptor nothing is advancing any more, and
@@ -227,7 +228,7 @@ def _render_playlist_text(playlist_json, live_edge_holdback_seconds=0):
     window = _apply_live_edge_holdback(
         state.get("window", []), live_edge_holdback_seconds
     )
-    if not window:
+    if not window or sum(float(entry.get("dur") or 0) for entry in window) < minimum_media_seconds:
         raise _PlaylistHoldbackPending()
     return render_media_playlist(
         window,
@@ -239,7 +240,8 @@ def _render_playlist_text(playlist_json, live_edge_holdback_seconds=0):
 
 
 def _cold_start_playlist_chunks(redis_client, token, channel_id, client_id, fmt,
-                                 init_grace, live_edge_holdback_seconds=0):
+                                 init_grace, live_edge_holdback_seconds=0,
+                                 initial_playlist_seconds=0):
     """Yield a chunked first playlist: comments while waiting, then the real body.
 
     Used before the shared manager publishes, and while a session-specific
@@ -283,7 +285,9 @@ def _cold_start_playlist_chunks(redis_client, token, channel_id, client_id, fmt,
             if playlist_json:
                 try:
                     body = _render_playlist_text(
-                        playlist_json, live_edge_holdback_seconds
+                        playlist_json,
+                        live_edge_holdback_seconds,
+                        initial_playlist_seconds,
                     )
                 except _PlaylistHoldbackPending:
                     # The shared HLS output is live, but this newly minted
@@ -434,7 +438,13 @@ def _serve_hls_playlist(token):
     loaded, error = _load_live_session(redis_client, token)
     if error is not None:
         return error
-    channel_id, client_id, live_edge_holdback_seconds, client_hash = loaded
+    (
+        channel_id,
+        client_id,
+        live_edge_holdback_seconds,
+        initial_playlist_seconds,
+        client_hash,
+    ) = loaded
     fmt = _resolved_format(client_hash)
 
     # Steady-state polls are the common path: one GET, normal response.
@@ -479,6 +489,7 @@ def _serve_hls_playlist(token):
             fmt,
             float(ConfigHelper.channel_init_grace_period()),
             live_edge_holdback_seconds,
+            initial_playlist_seconds,
         ),
         content_type="application/vnd.apple.mpegurl",
     )
@@ -496,7 +507,13 @@ def _serve_hls_segment(token, seq):
     loaded, error = _load_live_session(redis_client, token)
     if error is not None:
         return error
-    channel_id, _client_id, _live_edge_holdback_seconds, client_hash = loaded
+    (
+        channel_id,
+        _client_id,
+        _live_edge_holdback_seconds,
+        _initial_playlist_seconds,
+        client_hash,
+    ) = loaded
     fmt = _resolved_format(client_hash)
 
     redis_buffer = RedisClient.get_buffer()

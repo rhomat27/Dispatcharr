@@ -54,6 +54,9 @@ class MintHlsSessionTests(SimpleTestCase):
             "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_live_edge_holdback_seconds",
             return_value=0,
         ), patch(
+            "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_initial_playlist_seconds",
+            return_value=4,
+        ), patch(
             "apps.proxy.live_proxy.output.hls.session.secrets.token_urlsafe",
             return_value=TOKEN,
         ):
@@ -66,7 +69,7 @@ class MintHlsSessionTests(SimpleTestCase):
                 RedisKeys.client_metadata(CHANNEL_ID, CLIENT_ID),
                 RedisKeys.hls_session(TOKEN),
             ],
-            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "0", "0.0"],
+            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "0", "0.0", "4.0"],
         )
 
     def test_mint_stores_user_id_when_provided(self):
@@ -81,6 +84,9 @@ class MintHlsSessionTests(SimpleTestCase):
             "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_live_edge_holdback_seconds",
             return_value=12,
         ), patch(
+            "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_initial_playlist_seconds",
+            return_value=8,
+        ), patch(
             "apps.proxy.live_proxy.output.hls.session.secrets.token_urlsafe",
             return_value=TOKEN,
         ):
@@ -94,7 +100,7 @@ class MintHlsSessionTests(SimpleTestCase):
                 RedisKeys.client_metadata(CHANNEL_ID, CLIENT_ID),
                 RedisKeys.hls_session(TOKEN),
             ],
-            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "42", "12.0"],
+            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "42", "12.0", "8.0"],
         )
 
     def test_mint_returns_none_without_redis(self):
@@ -111,6 +117,9 @@ class MintHlsSessionTests(SimpleTestCase):
         ), patch(
             "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_live_edge_holdback_seconds",
             return_value=0,
+        ), patch(
+            "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_initial_playlist_seconds",
+            return_value=4,
         ):
             token = hls_session.mint_hls_session(redis, CHANNEL_ID, CLIENT_ID)
 
@@ -133,7 +142,7 @@ class TouchHlsSessionTests(SimpleTestCase):
     def test_touch_returns_channel_client_and_hash_when_live(self):
         redis, script = self._redis_with_touch(
             [
-                3, CHANNEL_ID, CLIENT_ID, "12",
+                3, CHANNEL_ID, CLIENT_ID, "12", "8",
                 "output_format", "hls", "output_profile_id", "",
             ]
         )
@@ -145,10 +154,11 @@ class TouchHlsSessionTests(SimpleTestCase):
             loaded, reason = hls_session.touch_hls_session(redis, TOKEN)
 
         self.assertIsNone(reason)
-        channel_id, client_id, holdback_seconds, client_hash = loaded
+        channel_id, client_id, holdback_seconds, initial_playlist_seconds, client_hash = loaded
         self.assertEqual(channel_id, CHANNEL_ID)
         self.assertEqual(client_id, CLIENT_ID)
         self.assertEqual(holdback_seconds, 12)
+        self.assertEqual(initial_playlist_seconds, 8)
         self.assertEqual(client_hash["output_format"], "hls")
         script.assert_called_once_with(
             keys=[RedisKeys.hls_session(TOKEN)],
@@ -215,6 +225,25 @@ class LiveEdgeHoldbackTests(SimpleTestCase):
 
         with self.assertRaises(hls_views._PlaylistHoldbackPending):
             hls_views._render_playlist_text(state, live_edge_holdback_seconds=4)
+
+    def test_waits_for_the_required_playable_media_after_holdback(self):
+        state = json.dumps({
+            "window": [
+                {"seq": 1, "dur": 4.0, "disc": False},
+                {"seq": 2, "dur": 4.0, "disc": False},
+                {"seq": 3, "dur": 4.0, "disc": False},
+            ],
+            "target": 4,
+            "adv_target": 6,
+            "ts": time.time(),
+        })
+
+        with self.assertRaises(hls_views._PlaylistHoldbackPending):
+            hls_views._render_playlist_text(
+                state,
+                live_edge_holdback_seconds=8,
+                minimum_media_seconds=8,
+            )
 
 
 class ColdStartPlaylistStreamTests(SimpleTestCase):
@@ -701,7 +730,7 @@ class HLSPlaylistViewTests(SimpleTestCase):
         })
         redis.get.return_value = stale
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
-            redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
+            redis, [3, CHANNEL_ID, CLIENT_ID, "0", "4", "output_format", "hls"]
         )
 
         response = hls_views.hls_playlist(self._request(), TOKEN)
@@ -717,7 +746,7 @@ class HLSPlaylistViewTests(SimpleTestCase):
             redis = MagicMock()
             redis.get.return_value = descriptor
             mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
-                redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
+                redis, [3, CHANNEL_ID, CLIENT_ID, "0", "4", "output_format", "hls"]
             )
 
             response = hls_views.hls_playlist(self._request(), TOKEN)
@@ -738,7 +767,7 @@ class HLSPlaylistViewTests(SimpleTestCase):
         })
         redis.get.return_value = body
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
-            redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
+            redis, [3, CHANNEL_ID, CLIENT_ID, "0", "4", "output_format", "hls"]
         )
 
         response = hls_views.hls_playlist(self._request(), TOKEN)
@@ -761,7 +790,7 @@ class HLSPlaylistViewTests(SimpleTestCase):
             None, None, "connecting", 0, 0
         )
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
-            redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
+            redis, [3, CHANNEL_ID, CLIENT_ID, "0", "4", "output_format", "hls"]
         )
 
         with patch.object(
@@ -783,7 +812,7 @@ class HLSPlaylistViewTests(SimpleTestCase):
         )
         # Resolved in the view (ORM-capable), before the connection is released.
         chunks.assert_called_once_with(
-            redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls", 45.0
+            redis, TOKEN, CHANNEL_ID, CLIENT_ID, "hls", 45.0, 0.0, 4.0
         )
 
     @patch("apps.proxy.live_proxy.output.hls.views.close_old_connections")
@@ -795,7 +824,7 @@ class HLSPlaylistViewTests(SimpleTestCase):
             None, None, "error", 0, 0
         )
         mock_proxy_cls.get_instance.return_value = self._proxy_with_touch(
-            redis, [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls"]
+            redis, [3, CHANNEL_ID, CLIENT_ID, "0", "4", "output_format", "hls"]
         )
 
         response = hls_views.hls_playlist(self._request(), TOKEN)
