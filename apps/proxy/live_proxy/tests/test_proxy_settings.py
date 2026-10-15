@@ -11,6 +11,7 @@ from core.models import CoreSettings
 from core.serializers import ProxySettingsSerializer
 
 MIGRATION_0026 = import_module("core.migrations.0026_add_channel_client_wait_period")
+MIGRATION_0027 = import_module("core.migrations.0027_add_hls_proxy_settings")
 
 
 class TSConfigProxySettingsDefaultsTests(SimpleTestCase):
@@ -51,6 +52,10 @@ class ProxySettingsSerializerTests(SimpleTestCase):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            "hls_segment_duration_seconds": 4,
+            "hls_window_size": 10,
+            "hls_initial_playlist_seconds": 4,
+            "hls_live_edge_holdback_seconds": 0,
             "validate_redirect_urls": True,
         }
         payload.update(overrides)
@@ -67,6 +72,19 @@ class ProxySettingsSerializerTests(SimpleTestCase):
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertFalse(serializer.validated_data["validate_redirect_urls"])
+
+    def test_accepts_native_hls_settings(self):
+        serializer = ProxySettingsSerializer(data=self._valid_payload(
+            hls_segment_duration_seconds=3,
+            hls_window_size=20,
+            hls_initial_playlist_seconds=8,
+            hls_live_edge_holdback_seconds=10,
+        ))
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["hls_segment_duration_seconds"], 3)
+        self.assertEqual(serializer.validated_data["hls_window_size"], 20)
+        self.assertEqual(serializer.validated_data["hls_initial_playlist_seconds"], 8)
+        self.assertEqual(serializer.validated_data["hls_live_edge_holdback_seconds"], 10)
 
     def test_validate_redirect_urls_defaults_true_when_omitted(self):
         payload = self._valid_payload()
@@ -95,6 +113,10 @@ class CoreSettingsProxyDefaultsTests(TestCase):
         defaults = CoreSettings.get_proxy_settings()
         self.assertEqual(defaults["channel_init_grace_period"], 60)
         self.assertEqual(defaults["channel_client_wait_period"], 5)
+        self.assertEqual(defaults["hls_segment_duration_seconds"], 4)
+        self.assertEqual(defaults["hls_window_size"], 10)
+        self.assertEqual(defaults["hls_initial_playlist_seconds"], 4)
+        self.assertEqual(defaults["hls_live_edge_holdback_seconds"], 0)
         self.assertTrue(defaults["validate_redirect_urls"])
 
 
@@ -163,3 +185,29 @@ class Migration0026ProxySettingsTests(TestCase):
 
         self.assertEqual(settings_obj.value["channel_init_grace_period"], 90)
         self.assertEqual(settings_obj.value["channel_client_wait_period"], 5)
+
+
+class Migration0027ProxySettingsTests(TestCase):
+    def _set_proxy_settings(self, value):
+        settings_obj, _ = CoreSettings.objects.get_or_create(
+            key="proxy_settings",
+            defaults={"name": "Proxy Settings", "value": value},
+        )
+        settings_obj.value = value
+        settings_obj.save(update_fields=["value"])
+        return settings_obj
+
+    def test_adds_hls_defaults_without_overwriting_existing_values(self):
+        settings_obj = self._set_proxy_settings({
+            "buffering_timeout": 30,
+            "hls_window_size": 20,
+        })
+
+        MIGRATION_0027.add_hls_proxy_settings(apps, None)
+        settings_obj.refresh_from_db()
+
+        self.assertEqual(settings_obj.value["buffering_timeout"], 30)
+        self.assertEqual(settings_obj.value["hls_segment_duration_seconds"], 4)
+        self.assertEqual(settings_obj.value["hls_window_size"], 20)
+        self.assertEqual(settings_obj.value["hls_initial_playlist_seconds"], 4)
+        self.assertEqual(settings_obj.value["hls_live_edge_holdback_seconds"], 0)

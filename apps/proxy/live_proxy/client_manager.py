@@ -182,7 +182,7 @@ class ClientManager:
         if isinstance(output_format, bytes):
             output_format = output_format.decode("utf-8", errors="replace")
         if output_format == "hls":
-            segment = float(ConfigHelper.get("HLS_SEGMENT_DURATION", 4))
+            segment = float(ConfigHelper.hls_segment_duration_seconds())
             missed = float(ConfigHelper.get("HLS_CLIENT_GHOST_SEGMENTS", 3))
             return segment * missed
         return self.heartbeat_interval * getattr(Config, "GHOST_CLIENT_MULTIPLIER", 5.0)

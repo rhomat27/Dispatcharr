@@ -39,8 +39,8 @@ HLS_KEY_TTL = 3600
 # elsewhere, and nothing restarts the segmenter until the key finally expires.
 HLS_OWNER_TTL = 60
 
-# HLS segmenter knobs (code-level ConfigHelper / TSConfig attrs). Not exposed
-# in the DB-backed Proxy Settings UI; add CoreSettings keys later if needed.
+# Native HLS defaults. Proxy Settings provides runtime overrides through
+# ConfigHelper; these keep existing deployments on their historical values.
 DEFAULT_SEGMENT_DURATION = 4
 # Target Redis retention depth for finished HLS segments (used to size chunk
 # TTL). The advertised playlist window tracks whatever is still in Redis
@@ -51,7 +51,6 @@ DEFAULT_WINDOW_SIZE = 10
 # so the first manifest is deep enough to avoid an early underrun.
 # This is video time, not wall clock. One steady 4s cut or two ~2s
 # fast-start cuts both clear it.
-MIN_INITIAL_PLAYLIST_SECONDS = 4.0
 # Accept a keyframe this far before the configured cut length. A GOP
 # aimed at 4s that lands a picture or two early (3.9s at 25 fps) then
 # closes cleanly instead of skipping that keyframe and force-cutting.
@@ -91,8 +90,9 @@ class HLSOutputManager:
         self._owns_output = False
         self._stopped = False
 
-        self.segment_duration = ConfigHelper.get('HLS_SEGMENT_DURATION', DEFAULT_SEGMENT_DURATION)
-        self.window_size = ConfigHelper.get('HLS_WINDOW_SIZE', DEFAULT_WINDOW_SIZE)
+        self.segment_duration = ConfigHelper.hls_segment_duration_seconds()
+        self.window_size = ConfigHelper.hls_window_size()
+        self.initial_playlist_seconds = ConfigHelper.hls_initial_playlist_seconds()
         # Frozen EXT-X-TARGETDURATION for this playlist (RFC 8216 6.2.1: MUST
         # NOT change across reloads). Cut target + ~one GOP (~2s) of headroom
         # covers the normal keyframe overrun past the cut threshold. 2x target
@@ -402,17 +402,17 @@ class HLSOutputManager:
     def _maybe_write_playlist_state(self):
         """Publish the playlist once the cold-start media gate is satisfied.
 
-        Before the first publish, wait until listed media reaches
-        MIN_INITIAL_PLAYLIST_SECONDS. After that, every call updates Redis.
+        Before the first publish, wait until listed media reaches the configured
+        initial-playlist duration. After that, every call updates Redis.
         """
         if not self._playlist_published:
             media = self._window_media_seconds()
             # Same slack the segmenter allows for an early keyframe, so a
             # ~3.96s GOP clears the gate instead of waiting for a second cut.
-            if media + _EARLY_KEYFRAME_SLACK < MIN_INITIAL_PLAYLIST_SECONDS:
+            if media + _EARLY_KEYFRAME_SLACK < self.initial_playlist_seconds:
                 logger.debug(
                     f"[HLS:{self.channel_id}] Holding initial playlist "
-                    f"({media:.3f}s < {MIN_INITIAL_PLAYLIST_SECONDS}s media)"
+                    f"({media:.3f}s < {self.initial_playlist_seconds}s media)"
                 )
                 return
             self._write_playlist_state()

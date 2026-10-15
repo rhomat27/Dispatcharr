@@ -51,6 +51,30 @@ class ConfigHelper:
         return settings.get('new_client_behind_seconds', 5)
 
     @staticmethod
+    def hls_segment_duration_seconds():
+        """Target native-HLS segment duration for newly started managers."""
+        settings = Config.get_proxy_settings()
+        return settings.get('hls_segment_duration_seconds', 4)
+
+    @staticmethod
+    def hls_window_size():
+        """Native-HLS retention sizing multiplier for newly started managers."""
+        settings = Config.get_proxy_settings()
+        return settings.get('hls_window_size', 10)
+
+    @staticmethod
+    def hls_initial_playlist_seconds():
+        """Completed media required before publishing an initial HLS playlist."""
+        settings = Config.get_proxy_settings()
+        return settings.get('hls_initial_playlist_seconds', 4)
+
+    @staticmethod
+    def hls_live_edge_holdback_seconds():
+        """Per-session native-HLS distance behind the newest completed segment."""
+        settings = Config.get_proxy_settings()
+        return settings.get('hls_live_edge_holdback_seconds', 0)
+
+    @staticmethod
     def keepalive_interval():
         """Get keepalive interval in seconds"""
         return ConfigHelper.get('KEEPALIVE_INTERVAL', 0.5)

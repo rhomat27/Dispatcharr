@@ -56,6 +56,10 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "hls_segment_duration_seconds": 4,
+                "hls_window_size": 10,
+                "hls_initial_playlist_seconds": 4,
+                "hls_live_edge_holdback_seconds": 0,
                 "validate_redirect_urls": True,
             }
 
@@ -115,8 +119,9 @@ class TSConfig(BaseConfig):
     GHOST_CLIENT_MULTIPLIER = 10.0  # How many heartbeat intervals before client considered ghost (10 = 50s, must exceed STREAM_TIMEOUT + FAILOVER_GRACE_PERIOD = 40s)
     CLIENT_WAIT_TIMEOUT = 60  # Seconds to wait for channel to become ready
 
-    # Native HLS output (code-level; not DB / UI Proxy Settings)
-    HLS_SEGMENT_DURATION = 4  # Target segment length in seconds
+    # Native HLS output defaults. Runtime values are loaded from Proxy Settings
+    # by ConfigHelper so existing deployments retain these values unchanged.
+    HLS_SEGMENT_DURATION = 4
     # Floor for HLS segment Redis TTL sizing (not the advertised playlist
     # length; the playlist tracks surviving Redis chunks).
     HLS_WINDOW_SIZE = 10

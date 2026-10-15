@@ -70,6 +70,30 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
+  hls_segment_duration_seconds: {
+    label: 'HLS Segment Duration',
+    hls: true,
+    description:
+      'Target duration in seconds for native HLS segments. Packet-copy streams still cut only at source keyframes.',
+  },
+  hls_window_size: {
+    label: 'HLS Window Size',
+    hls: true,
+    description:
+      'Native HLS segment retention sizing. Larger values provide more recovery room at the cost of Redis memory.',
+  },
+  hls_initial_playlist_seconds: {
+    label: 'Initial HLS Playlist Media',
+    hls: true,
+    description:
+      'Completed media in seconds required before native HLS returns its first playlist.',
+  },
+  hls_live_edge_holdback_seconds: {
+    label: 'HLS Live Edge Holdback',
+    hls: true,
+    description:
+      'Keep new native HLS sessions this many seconds behind the newest completed segment (0 = live edge).',
+  },
   validate_redirect_urls: {
     label: 'Validate Redirect URLs',
     type: 'boolean',

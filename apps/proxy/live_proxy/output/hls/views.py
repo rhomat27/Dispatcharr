@@ -134,11 +134,12 @@ def _touch_interval_seconds():
     """How often a cold-start stream must refresh its client record.
 
     last_active is only advanced by touch_hls_session, and an HLS client is
-    reaped as a ghost after HLS_SEGMENT_DURATION * HLS_CLIENT_GHOST_SEGMENTS
+    reaped as a ghost after hls_segment_duration_seconds *
+    HLS_CLIENT_GHOST_SEGMENTS
     seconds without it. A request parked for the whole channel init grace
     would otherwise be reaped mid-wait.
     """
-    ghost_timeout = float(ConfigHelper.get("HLS_SEGMENT_DURATION", 4)) * float(
+    ghost_timeout = float(ConfigHelper.hls_segment_duration_seconds()) * float(
         ConfigHelper.get("HLS_CLIENT_GHOST_SEGMENTS", 3)
     )
     return max(0.5, min(3.0, ghost_timeout / 4))
@@ -187,7 +188,34 @@ class _StalePlaylist(Exception):
     """The playlist descriptor stopped advancing (see _playlist_is_stale)."""
 
 
-def _render_playlist_text(playlist_json):
+class _PlaylistHoldbackPending(Exception):
+    """A session's live-edge holdback has not accumulated enough media yet."""
+
+
+def _apply_live_edge_holdback(window, holdback_seconds):
+    """Return the advertised prefix that remains behind a session's live edge.
+
+    HLS playlist updates may remove segments from their beginning but must not
+    retract segments already advertised at their end. Holding back by omitting
+    a tail prefix is therefore safe when the value is frozen per session: as
+    the source grows, new segments are appended to this returned prefix.
+    """
+    try:
+        holdback = max(0.0, float(holdback_seconds or 0))
+    except (TypeError, ValueError):
+        holdback = 0.0
+    if holdback <= 0:
+        return window
+
+    withheld = 0.0
+    end = len(window)
+    while end and withheld < holdback:
+        end -= 1
+        withheld += float(window[end].get("dur") or 0)
+    return window[:end]
+
+
+def _render_playlist_text(playlist_json, live_edge_holdback_seconds=0):
     """Render playlist JSON to m3u8 text.
 
     Raises _StalePlaylist for a descriptor nothing is advancing any more, and
@@ -196,8 +224,13 @@ def _render_playlist_text(playlist_json):
     state = json.loads(playlist_json)
     if _playlist_is_stale(state):
         raise _StalePlaylist()
+    window = _apply_live_edge_holdback(
+        state.get("window", []), live_edge_holdback_seconds
+    )
+    if not window:
+        raise _PlaylistHoldbackPending()
     return render_media_playlist(
-        state.get("window", []),
+        window,
         state.get("target", 4),
         adv_target=state.get("adv_target"),
         disc_sequence=state.get("disc_seq", 0),
@@ -206,13 +239,13 @@ def _render_playlist_text(playlist_json):
 
 
 def _cold_start_playlist_chunks(redis_client, token, channel_id, client_id, fmt,
-                                init_grace):
+                                 init_grace, live_edge_holdback_seconds=0):
     """Yield a chunked first playlist: comments while waiting, then the real body.
 
-    Sent only when Redis has no playlist yet. Finishes with the rendered
-    playlist once the manager publishes (after the media-duration gate). When
-    giving up it just ends the response; it never appends a header-only
-    playlist (see the module docstring).
+    Used before the shared manager publishes, and while a session-specific
+    live-edge holdback is still accumulating. Finishes with the rendered
+    playlist once enough media is available. When giving up it just ends the
+    response; it never appends a header-only playlist (see the module docstring).
 
     ``init_grace`` is resolved by the caller: the settings lookup can hit the
     ORM, and this generator runs after the view has released its connection.
@@ -249,17 +282,26 @@ def _cold_start_playlist_chunks(redis_client, token, channel_id, client_id, fmt,
 
             if playlist_json:
                 try:
-                    body = _render_playlist_text(playlist_json)
+                    body = _render_playlist_text(
+                        playlist_json, live_edge_holdback_seconds
+                    )
+                except _PlaylistHoldbackPending:
+                    # The shared HLS output is live, but this newly minted
+                    # session has not yet accumulated its configured distance
+                    # behind the edge. Keep the request open rather than
+                    # returning an invalid empty media playlist.
+                    body = None
                 except (_StalePlaylist, TypeError, ValueError, KeyError) as e:
                     logger.error(
                         f"[{client_id}] HLS cold-start got unusable playlist "
                         f"for {channel_id}: {e!r}"
                     )
                     return
-                # #EXTM3U may already be on the wire; if the playlist won the
-                # race before any bytes went out, send the whole document.
-                yield body.removeprefix("#EXTM3U\n") if sent_extm3u else body
-                return
+                if body is not None:
+                    # #EXTM3U may already be on the wire; if the playlist won
+                    # the race before any bytes went out, send the whole body.
+                    yield body.removeprefix("#EXTM3U\n") if sent_extm3u else body
+                    return
 
             if not sent_extm3u:
                 yield "#EXTM3U\n"
@@ -392,14 +434,16 @@ def _serve_hls_playlist(token):
     loaded, error = _load_live_session(redis_client, token)
     if error is not None:
         return error
-    channel_id, client_id, client_hash = loaded
+    channel_id, client_id, live_edge_holdback_seconds, client_hash = loaded
     fmt = _resolved_format(client_hash)
 
     # Steady-state polls are the common path: one GET, normal response.
     playlist_json = redis_client.get(RedisKeys.output_playlist(channel_id, fmt))
     if playlist_json:
         try:
-            body = _render_playlist_text(playlist_json)
+            body = _render_playlist_text(playlist_json, live_edge_holdback_seconds)
+        except _PlaylistHoldbackPending:
+            body = None
         except _StalePlaylist:
             # Temporary unavailability of a live playlist update: 404 so
             # clients retry, rather than 410 Gone for a permanent end.
@@ -412,9 +456,10 @@ def _serve_hls_playlist(token):
                 f"[{client_id}] Malformed HLS playlist state for {channel_id}: {e}"
             )
             return JsonResponse({"error": "Playlist unavailable"}, status=500)
-        response = HttpResponse(body, content_type="application/vnd.apple.mpegurl")
-        response["Cache-Control"] = "no-cache"
-        return response
+        if body is not None:
+            response = HttpResponse(body, content_type="application/vnd.apple.mpegurl")
+            response["Cache-Control"] = "no-cache"
+            return response
 
     # Before committing to a streamed 200, fail fast if the channel is already
     # dead so the client still gets a proper 410 status code.
@@ -433,6 +478,7 @@ def _serve_hls_playlist(token):
             client_id,
             fmt,
             float(ConfigHelper.channel_init_grace_period()),
+            live_edge_holdback_seconds,
         ),
         content_type="application/vnd.apple.mpegurl",
     )
@@ -450,7 +496,7 @@ def _serve_hls_segment(token, seq):
     loaded, error = _load_live_session(redis_client, token)
     if error is not None:
         return error
-    channel_id, _client_id, client_hash = loaded
+    channel_id, _client_id, _live_edge_holdback_seconds, client_hash = loaded
     fmt = _resolved_format(client_hash)
 
     redis_buffer = RedisClient.get_buffer()

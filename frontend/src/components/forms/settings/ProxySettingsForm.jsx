@@ -28,6 +28,10 @@ const isNumericField = (key) => {
     'channel_init_grace_period',
     'channel_client_wait_period',
     'new_client_behind_seconds',
+    'hls_segment_duration_seconds',
+    'hls_window_size',
+    'hls_initial_playlist_seconds',
+    'hls_live_edge_holdback_seconds',
   ].includes(key);
 };
 
@@ -41,7 +45,18 @@ const getNumericFieldMax = (key) => {
   if (key === 'channel_shutdown_delay') return 300;
   if (key === 'channel_client_wait_period') return 300;
   if (key === 'new_client_behind_seconds') return 120;
+  if (key === 'hls_segment_duration_seconds') return 30;
+  if (key === 'hls_window_size') return 120;
+  if (key === 'hls_initial_playlist_seconds') return 120;
+  if (key === 'hls_live_edge_holdback_seconds') return 120;
   return 300;
+};
+
+const getNumericFieldMin = (key) => {
+  if (key === 'hls_segment_duration_seconds') return 1;
+  if (key === 'hls_window_size') return 2;
+  if (key === 'hls_initial_playlist_seconds') return 1;
+  return 0;
 };
 
 const renderProxySettingField = (key, config, proxySettingsForm) => {
@@ -63,7 +78,7 @@ const renderProxySettingField = (key, config, proxySettingsForm) => {
         label={config.label}
         {...proxySettingsForm.getInputProps(key)}
         description={config.description || null}
-        min={0}
+        min={getNumericFieldMin(key)}
         max={getNumericFieldMax(key)}
       />
     );
@@ -95,15 +110,41 @@ const renderProxySettingField = (key, config, proxySettingsForm) => {
 };
 
 const ProxySettingsOptions = React.memo(({ proxySettingsForm }) => {
+  const [hlsOpen, setHlsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const entries = Object.entries(PROXY_SETTINGS_OPTIONS);
-  const mainEntries = entries.filter(([, config]) => !config.advanced);
-  const advancedEntries = entries.filter(([, config]) => config.advanced);
+  const hlsEntries = entries.filter(([, config]) => config.hls);
+  const mainEntries = entries.filter(([, config]) => !config.hls && !config.advanced);
+  const advancedEntries = entries.filter(([, config]) => !config.hls && config.advanced);
 
   return (
     <>
       {mainEntries.map(([key, config]) =>
         renderProxySettingField(key, config, proxySettingsForm)
+      )}
+
+      {hlsEntries.length > 0 && (
+        <>
+          <Button
+            variant="subtle"
+            size="xs"
+            leftSection={
+              hlsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />
+            }
+            onClick={() => setHlsOpen((open) => !open)}
+            c="dimmed"
+            styles={{ root: { alignSelf: 'flex-start' } }}
+          >
+            {hlsOpen ? 'Hide' : 'Show'} HLS Settings
+          </Button>
+          <Collapse in={hlsOpen}>
+            <Stack gap="sm">
+              {hlsEntries.map(([key, config]) =>
+                renderProxySettingField(key, config, proxySettingsForm)
+              )}
+            </Stack>
+          </Collapse>
+        </>
       )}
 
       {advancedEntries.length > 0 && (

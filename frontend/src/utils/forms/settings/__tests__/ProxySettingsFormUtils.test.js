@@ -63,6 +63,10 @@ describe('ProxySettingsFormUtils', () => {
         channel_init_grace_period: 60,
         channel_client_wait_period: 5,
         new_client_behind_seconds: 5,
+        hls_segment_duration_seconds: 4,
+        hls_window_size: 10,
+        hls_initial_playlist_seconds: 4,
+        hls_live_edge_holdback_seconds: 0,
         validate_redirect_urls: true,
       });
     });
@@ -85,6 +89,10 @@ describe('ProxySettingsFormUtils', () => {
       expect(typeof result.channel_init_grace_period).toBe('number');
       expect(typeof result.channel_client_wait_period).toBe('number');
       expect(typeof result.new_client_behind_seconds).toBe('number');
+      expect(typeof result.hls_segment_duration_seconds).toBe('number');
+      expect(typeof result.hls_window_size).toBe('number');
+      expect(typeof result.hls_initial_playlist_seconds).toBe('number');
+      expect(typeof result.hls_live_edge_holdback_seconds).toBe('number');
       expect(typeof result.validate_redirect_urls).toBe('boolean');
     });
   });

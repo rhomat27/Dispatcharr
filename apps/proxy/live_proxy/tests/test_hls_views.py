@@ -51,6 +51,9 @@ class MintHlsSessionTests(SimpleTestCase):
             "apps.proxy.live_proxy.output.hls.session.ConfigHelper.get",
             return_value=60,
         ), patch(
+            "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_live_edge_holdback_seconds",
+            return_value=0,
+        ), patch(
             "apps.proxy.live_proxy.output.hls.session.secrets.token_urlsafe",
             return_value=TOKEN,
         ):
@@ -63,7 +66,7 @@ class MintHlsSessionTests(SimpleTestCase):
                 RedisKeys.client_metadata(CHANNEL_ID, CLIENT_ID),
                 RedisKeys.hls_session(TOKEN),
             ],
-            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "0"],
+            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "0", "0.0"],
         )
 
     def test_mint_stores_user_id_when_provided(self):
@@ -74,6 +77,9 @@ class MintHlsSessionTests(SimpleTestCase):
         with patch(
             "apps.proxy.live_proxy.output.hls.session.ConfigHelper.get",
             return_value=60,
+        ), patch(
+            "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_live_edge_holdback_seconds",
+            return_value=12,
         ), patch(
             "apps.proxy.live_proxy.output.hls.session.secrets.token_urlsafe",
             return_value=TOKEN,
@@ -88,7 +94,7 @@ class MintHlsSessionTests(SimpleTestCase):
                 RedisKeys.client_metadata(CHANNEL_ID, CLIENT_ID),
                 RedisKeys.hls_session(TOKEN),
             ],
-            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "42"],
+            args=[CHANNEL_ID, CLIENT_ID, TOKEN, 60, "42", "12.0"],
         )
 
     def test_mint_returns_none_without_redis(self):
@@ -102,6 +108,9 @@ class MintHlsSessionTests(SimpleTestCase):
         with patch(
             "apps.proxy.live_proxy.output.hls.session.secrets.token_urlsafe",
             return_value=TOKEN,
+        ), patch(
+            "apps.proxy.live_proxy.output.hls.session.ConfigHelper.hls_live_edge_holdback_seconds",
+            return_value=0,
         ):
             token = hls_session.mint_hls_session(redis, CHANNEL_ID, CLIENT_ID)
 
@@ -123,7 +132,10 @@ class TouchHlsSessionTests(SimpleTestCase):
 
     def test_touch_returns_channel_client_and_hash_when_live(self):
         redis, script = self._redis_with_touch(
-            [3, CHANNEL_ID, CLIENT_ID, "output_format", "hls", "output_profile_id", ""]
+            [
+                3, CHANNEL_ID, CLIENT_ID, "12",
+                "output_format", "hls", "output_profile_id", "",
+            ]
         )
 
         with patch(
@@ -133,9 +145,10 @@ class TouchHlsSessionTests(SimpleTestCase):
             loaded, reason = hls_session.touch_hls_session(redis, TOKEN)
 
         self.assertIsNone(reason)
-        channel_id, client_id, client_hash = loaded
+        channel_id, client_id, holdback_seconds, client_hash = loaded
         self.assertEqual(channel_id, CHANNEL_ID)
         self.assertEqual(client_id, CLIENT_ID)
+        self.assertEqual(holdback_seconds, 12)
         self.assertEqual(client_hash["output_format"], "hls")
         script.assert_called_once_with(
             keys=[RedisKeys.hls_session(TOKEN)],
@@ -178,6 +191,30 @@ def _playlist_json(seq=1, ts=None):
         "disc_seq": 0,
         "ts": time.time() if ts is None else ts,
     })
+
+
+class LiveEdgeHoldbackTests(SimpleTestCase):
+    def test_holds_back_whole_tail_segments_until_the_requested_duration(self):
+        window = [
+            {"seq": 1, "dur": 4.0, "disc": False},
+            {"seq": 2, "dur": 4.0, "disc": False},
+            {"seq": 3, "dur": 4.0, "disc": False},
+        ]
+
+        self.assertEqual(
+            hls_views._apply_live_edge_holdback(window, 7), window[:1]
+        )
+
+    def test_waits_instead_of_returning_an_empty_playlist(self):
+        state = json.dumps({
+            "window": [{"seq": 1, "dur": 4.0, "disc": False}],
+            "target": 4,
+            "adv_target": 6,
+            "ts": time.time(),
+        })
+
+        with self.assertRaises(hls_views._PlaylistHoldbackPending):
+            hls_views._render_playlist_text(state, live_edge_holdback_seconds=4)
 
 
 class ColdStartPlaylistStreamTests(SimpleTestCase):
@@ -478,10 +515,18 @@ class ColdStartPlaylistStreamTests(SimpleTestCase):
 
     def test_touch_interval_scales_with_ghost_timeout(self):
         base = "apps.proxy.live_proxy.output.hls.views.ConfigHelper.get"
-        with patch(base, side_effect=lambda key, default=None: default):
+        with patch(base, side_effect=lambda key, default=None: default), patch.object(
+            hls_views.ConfigHelper,
+            "hls_segment_duration_seconds",
+            return_value=4,
+        ):
             self.assertEqual(hls_views._touch_interval_seconds(), 3.0)
-        values = {"HLS_SEGMENT_DURATION": 1, "HLS_CLIENT_GHOST_SEGMENTS": 3}
-        with patch(base, side_effect=lambda key, default=None: values.get(key, default)):
+        values = {"HLS_CLIENT_GHOST_SEGMENTS": 3}
+        with patch(base, side_effect=lambda key, default=None: values.get(key, default)), patch.object(
+            hls_views.ConfigHelper,
+            "hls_segment_duration_seconds",
+            return_value=1,
+        ):
             self.assertEqual(hls_views._touch_interval_seconds(), 0.75)
 
 
